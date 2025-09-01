@@ -15,6 +15,7 @@ class ChatTextProcessor extends TextComponent {
   }
 
   async onTranscript(text, reply) {
+    // TODO: Make this do something useful once I've figured it out.
     const prompt = `You are a helpful AI assistant in a video chat meeting. Respond naturally and helpfully to: ${text}`;
 
     try {
