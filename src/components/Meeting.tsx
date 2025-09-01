@@ -8,7 +8,6 @@ import {
   RtkNotifications,
   RtkParticipantsAudio,
   RtkSetupScreen,
-  RtkSpinner,
   RtkWaitingScreen,
 } from '@cloudflare/realtimekit-react-ui';
 import {
@@ -16,7 +15,7 @@ import {
   useRealtimeKitSelector,
 } from '@cloudflare/realtimekit-react';
 import { type States } from '@cloudflare/realtimekit-ui';
-import { useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 function UI() {
   const { meeting } = useRealtimeKitMeeting();
@@ -97,7 +96,7 @@ export default function Meeting() {
     };
   }, []);
 
-  let children: JSX.Element;
+  let children: React.ReactElement;
 
   switch (roomState) {
     case 'init':

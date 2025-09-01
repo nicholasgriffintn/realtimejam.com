@@ -92,7 +92,7 @@ function ActiveSpeakerView({
 
   useEffect(() => {
     if (screenshares.length > screensharesRef.current.length) {
-      const newScreenshare = screenshares.at(-1)!;
+      const newScreenshare = screenshares[screenshares.length - 1];
       if (canSpotlight) {
         meeting.meta.setSelfActiveTab(
           {
@@ -109,7 +109,7 @@ function ActiveSpeakerView({
 
   useEffect(() => {
     if (plugins.length > pluginsRef.current.length) {
-      const newPlugin = plugins.at(-1)!;
+      const newPlugin = plugins[plugins.length - 1];
       if (canSpotlight) {
         meeting.meta.setSelfActiveTab(
           {

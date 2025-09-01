@@ -1,6 +1,5 @@
 import { useMeetingStore } from '../lib/meeting-store';
 import {
-  RtkGrid,
   RtkSimpleGrid,
   RtkSpotlightGrid,
 } from '@cloudflare/realtimekit-react-ui';

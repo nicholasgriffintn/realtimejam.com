@@ -9,7 +9,7 @@ import {
   RtkChat,
 } from '@cloudflare/realtimekit-react-ui';
 import { useRealtimeKitMeeting } from '@cloudflare/realtimekit-react';
-import { memo } from 'react';
+import React, { memo } from 'react';
 
 const Sidebar = memo(function Sidebar() {
   const { meeting } = useRealtimeKitMeeting();
@@ -18,7 +18,7 @@ const Sidebar = memo(function Sidebar() {
   const states = useMeetingStore((m) => m.states);
   const isMobile = useMeetingStore((m) => m.isMobile);
 
-  let sidebar: JSX.Element | null = null;
+  let sidebar: React.ReactElement | null = null;
 
   switch (states.sidebar) {
     case 'participants':
