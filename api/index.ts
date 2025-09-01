@@ -16,7 +16,7 @@ class ChatTextProcessor extends TextComponent {
 
   async onTranscript(text, reply) {
     const prompt = `You are a helpful AI assistant in a video chat meeting. Respond naturally and helpfully to: ${text}`;
-    
+
     try {
       const { response } = await this.env.AI.run(
         "@cf/meta/llama-3.1-8b-instruct",
@@ -114,34 +114,34 @@ async function handleMeetingAPI(request: Request, env: Env) {
         }
 
         const authToken = authHeader.split(" ")[1];
-        
-        // Check if agent is already in meeting
-        const participantsResponse = await fetch(`${env.RTK_API_BASE_URL}/meetings/${meetingId}/participants`, {
-          headers: {
-            "Authorization": `Bearer ${env.API_TOKEN}`,
-            "Content-Type": "application/json"
-          }
-        });
 
-        if (participantsResponse.ok) {
-          const participants = await participantsResponse.json();
-          const hasAgent = participants.data?.some((p: any) => p.name?.includes('agent') || p.role === 'agent');
-          
-          if (!hasAgent) {
-            // Initialize agent to join the meeting
-            await stub.init(
-              agentId,
-              meetingId,
-              authToken,
-              url.host,
-              env.ACCOUNT_ID,
-              env.API_TOKEN
-            );
+        if (env.API_TOKEN && env.RTK_API_BASE_URL) {
+          const participantsResponse = await fetch(`${env.RTK_API_BASE_URL}/meetings/${meetingId}/participants`, {
+            headers: {
+              "Authorization": `Bearer ${env.API_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          });
+
+          if (participantsResponse.ok) {
+            const participants = await participantsResponse.json();
+            const hasAgent = participants.data?.some((p: any) => p.name?.includes('agent') || p.role === 'agent');
+
+            if (!hasAgent) {
+              await stub.init(
+                agentId,
+                meetingId,
+                authToken,
+                url.host,
+                env.ACCOUNT_ID,
+                env.API_TOKEN
+              );
+            }
           }
         }
 
-        return new Response(JSON.stringify({ 
-          success: true, 
+        return new Response(JSON.stringify({
+          success: true,
           meetingId,
           message: "Ready to join meeting"
         }), {
@@ -179,13 +179,12 @@ async function handleMeetingAPI(request: Request, env: Env) {
         const event = await request.json();
         console.log("Webhook event received:", event);
 
-        // Handle different webhook events
         switch (event.type) {
           case "meeting.participant_joined":
-            // Agent logic can be added here if needed
+            // TODO: Agent logic can be added here if needed
             break;
           case "meeting.participant_left":
-            // Check if we need to keep agent in meeting
+            // TODO: Check if we need to keep agent in meeting
             break;
         }
 
@@ -216,7 +215,6 @@ export default {
     try {
       return await env.ASSETS.fetch(request);
     } catch (error) {
-      // Fallback for SPA routing - serve index.html for non-API routes
       if (url.pathname !== "/" && !url.pathname.includes(".")) {
         const indexRequest = new Request(new URL("/", request.url), request);
         return await env.ASSETS.fetch(indexRequest);
