@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "starterjam",
+  "name": "realtimejam",
   "main": "api/index.ts",
   "compatibility_date": "2025-04-10",
   "compatibility_flags": ["nodejs_compat"],
@@ -8,15 +8,15 @@
     "binding": "ASSETS",
     "directory": "dist/client"
   },
-   "vars": {
-     "RTK_API_BASE_URL": "https://api.realtime.cloudflare.com/v2"
-   },
+  "vars": {
+    "RTK_API_BASE_URL": "https://api.realtime.cloudflare.com/v2"
+  },
   "observability": {
     "enabled": false
   },
   "ai": {
-     "binding": "AI"
-   },
+    "binding": "AI"
+  },
   "migrations": [
     {
       "new_sqlite_classes": ["RealtimeChatAgent"],
@@ -30,5 +30,5 @@
         "name": "REALTIME_CHAT_AGENT"
       }
     ]
-  },
+  }
 }
