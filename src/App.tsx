@@ -1,274 +1,103 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import Meeting from './components/Meeting';
+import MeetingJoin from './components/MeetingJoin';
+import { RtkSpinner } from '@cloudflare/realtimekit-react-ui';
+import { RealtimeKitProvider, useRealtimeKitClient } from '@cloudflare/realtimekit-react';
+import { useEffect, useState } from 'react';
 
-import {
-  createRoom,
-  joinRoom,
-  connectToRoom,
-  disconnectFromRoom,
-  updateSettings,
-  addEventListener,
-  removeEventListener,
-  isConnected,
-  type WebSocketMessageType,
-} from './lib/api-service';
-import type { RoomData, WebSocketErrorData, RoomSettings } from './types';
+function App() {
+  const [meeting, initMeeting] = useRealtimeKitClient();
+  const [isJoining, setIsJoining] = useState(false);
+  const [hasAuthToken, setHasAuthToken] = useState(false);
 
-import WelcomeScreen from './components/WelcomeScreen';
-import CreateRoomScreen from './components/CreateRoomScreen';
-import JoinRoomScreen from './components/JoinRoomScreen';
-import RoomScreen from './components/RoomScreen';
-import ErrorBanner from './components/ErrorBanner';
-import LoadingOverlay from './components/LoadingOverlay';
-import { config } from './config';
-
-type AppScreen = 'welcome' | 'create' | 'join' | 'room';
-
-const App = () => {
-  const { app } = config;
-
-  const [name, setName] = useState<string>('');
-  const [roomKey, setRoomKey] = useState<string>('');
-  const [screen, setScreen] = useState<AppScreen>('welcome');
-  const [roomData, setRoomData] = useState<RoomData>({
-    key: '',
-    users: [],
-    moderator: '',
-    connectedUsers: {},
-    settings: {},
-  });
-  const [isModeratorView, setIsModeratorView] = useState<boolean>(false);
-  const [error, setError] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-
-  const didLoadName = useRef(false);
-  const didCheckUrlParams = useRef(false);
-  const didAttemptRestore = useRef(false);
-
-  // Join room from URL parameters
   useEffect(() => {
-    if (didCheckUrlParams.current) return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const authToken = searchParams.get('authToken');
+    const meetingId = searchParams.get('meetingId');
 
-    didCheckUrlParams.current = true;
-
-    try {
-      const url = new URL(window.location.href);
-      const joinParam = url.searchParams.get('join');
-
-      // Check if URL contains ?join=roomKey
-      if (joinParam && joinParam.length > 0) {
-        setRoomKey(joinParam.toUpperCase());
-        setScreen('join');
-
-        window.history.replaceState({}, document.title, '/');
-      }
-    } catch (err) {
-      console.error('Failed to parse URL parameters', err);
-    }
-  }, []);
-
-  // Auto-reconnect to last room on refresh
-  useEffect(() => {
-    if (didAttemptRestore.current) return;
-    if (screen !== 'welcome') return;
-    if (!name) return;
-    didAttemptRestore.current = true;
-    const savedRoomKey = localStorage.getItem(`${app.key}_roomKey`);
-    if (savedRoomKey) {
-      setIsLoading(true);
-      joinRoom(name, savedRoomKey)
-        .then((joinedRoom) => {
-          setRoomData(joinedRoom);
-          setIsModeratorView(joinedRoom.moderator === name);
-          setScreen('room');
-        })
-        .catch((err) => {
-          const errorMessage =
-            err instanceof Error ? err.message : 'Failed to reconnect to room';
-          setError(errorMessage);
-          localStorage.removeItem(`${app.key}_roomKey`);
-        })
-        .finally(() => setIsLoading(false));
-    }
-  }, [name, screen]);
-
-  const handleRoomUpdate = useCallback(
-    (updatedRoomData: RoomData) => {
-      setRoomData(updatedRoomData);
-
-      setIsModeratorView(updatedRoomData.moderator === name);
-
-      setError('');
-    },
-    [name]
-  );
-
-  // Connect to WebSocket when entering a room
-  useEffect(() => {
-    if (screen === 'room' && name && roomData.key) {
-      connectToRoom(roomData.key, name, handleRoomUpdate);
-
-      const errorHandler = (data: WebSocketErrorData) => {
-        setError(data.error || 'Connection error');
-      };
-
-      const eventTypes: WebSocketMessageType[] = ['disconnected', 'error'];
-
-      for (const type of eventTypes) {
-        addEventListener(type, errorHandler);
-      }
-
-      return () => {
-        disconnectFromRoom();
-        for (const type of eventTypes) {
-          removeEventListener(type, errorHandler);
+    if (authToken && meetingId) {
+      setHasAuthToken(true);
+      setIsJoining(true);
+      
+      // Notify our API that we're joining the meeting (to trigger agent if needed)
+      fetch(`/api/meeting/join?meetingId=${meetingId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
         }
-      };
+      }).catch(console.error);
+
+      initMeeting({
+        authToken,
+        defaults: {
+          audio: false,
+          video: false,
+        },
+      }).then((meeting) => {
+        setIsJoining(false);
+        Object.assign(window, { meeting });
+      }).catch((error) => {
+        console.error('Failed to join meeting:', error);
+        setIsJoining(false);
+      });
     }
-  }, [screen, name, roomData.key, handleRoomUpdate]);
+  }, [initMeeting]);
 
-  // Persist user name in localStorage (Combined Load & Save)
-  useEffect(() => {
-    if (!didLoadName.current) {
-      const savedName = localStorage.getItem(`${app.key}_username`);
-      if (savedName) {
-        setName(savedName);
-      }
-      didLoadName.current = true;
-      return;
-    }
-
-    if (name === '' && !localStorage.getItem(`${app.key}_username`)) {
-      return;
-    }
-
-    const saveTimeout = setTimeout(() => {
-      localStorage.setItem(`${app.key}_username`, name);
-    }, 500);
-
-    return () => clearTimeout(saveTimeout);
-  }, [name]);
-
-  const handleCreateRoom = async () => {
-    if (!name) return;
-
-    setIsLoading(true);
-    setError('');
-
+  const handleJoinMeeting = async (meetingId: string, authToken: string) => {
+    setIsJoining(true);
+    
     try {
-      const newRoom = await createRoom(name);
+      // Update URL with parameters
+      const url = new URL(window.location.href);
+      url.searchParams.set('meetingId', meetingId);
+      url.searchParams.set('authToken', authToken);
+      window.history.pushState({}, '', url.toString());
 
-      setRoomData(newRoom);
-      localStorage.setItem(`${app.key}_roomKey`, newRoom.key);
-      setIsModeratorView(true);
-      setScreen('room');
-    } catch (err: unknown) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to create room';
-      setError(errorMessage);
+      // Notify our API
+      await fetch(`/api/meeting/join?meetingId=${meetingId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      // Initialize the meeting
+      await initMeeting({
+        authToken,
+        defaults: {
+          audio: false,
+          video: false,
+        },
+      });
+      
+      setHasAuthToken(true);
+      Object.assign(window, { meeting });
+    } catch (error) {
+      console.error('Failed to join meeting:', error);
+      alert('Failed to join meeting. Please check your meeting ID and auth token.');
     } finally {
-      setIsLoading(false);
+      setIsJoining(false);
     }
   };
 
-  const handleJoinRoom = async () => {
-    if (!name || !roomKey) return;
-
-    setIsLoading(true);
-    setError('');
-
-    try {
-      const joinedRoom = await joinRoom(name, roomKey);
-
-      setRoomData(joinedRoom);
-      localStorage.setItem(`${app.key}_roomKey`, joinedRoom.key);
-      setIsModeratorView(joinedRoom.moderator === name);
-      setScreen('room');
-    } catch (err: unknown) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to join room';
-      setError(errorMessage);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleUpdateSettings = (settings: RoomSettings) => {
-    if (!isModeratorView) return;
-
-    try {
-      updateSettings(settings);
-    } catch (err: unknown) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to update settings';
-      setError(errorMessage);
-    }
-  };
-
-  const handleLeaveRoom = () => {
-    disconnectFromRoom();
-    localStorage.removeItem(`${app.key}_roomKey`);
-    setRoomData({
-      key: '',
-      users: [],
-      moderator: '',
-      connectedUsers: {},
-      settings: {},
-    });
-    setScreen('welcome');
-  };
-
-  const clearError = () => setError('');
+  if (!hasAuthToken) {
+    return <MeetingJoin onJoinMeeting={handleJoinMeeting} isJoining={isJoining} />;
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {isLoading && <LoadingOverlay />}
-
-      {error && screen !== 'room' && (
-        <ErrorBanner message={error} onClose={clearError} />
-      )}
-
-      {screen === 'welcome' && (
-        <WelcomeScreen
-          onCreateRoom={() => setScreen('create')}
-          onJoinRoom={() => setScreen('join')}
-        />
-      )}
-      {screen === 'create' && (
-        <CreateRoomScreen
-          name={name}
-          onNameChange={setName}
-          onCreateRoom={handleCreateRoom}
-          onBack={() => setScreen('welcome')}
-          error={error}
-          onClearError={clearError}
-        />
-      )}
-      {screen === 'join' && (
-        <JoinRoomScreen
-          name={name}
-          roomKey={roomKey}
-          onNameChange={setName}
-          onRoomKeyChange={setRoomKey}
-          onJoinRoom={handleJoinRoom}
-          onBack={() => setScreen('welcome')}
-          error={error}
-          onClearError={clearError}
-        />
-      )}
-      {screen === 'room' && (
-        <RoomScreen
-          roomData={roomData}
-          name={name}
-          isModeratorView={isModeratorView}
-          onUpdateSettings={handleUpdateSettings}
-          onLeaveRoom={handleLeaveRoom}
-          error={error}
-          onClearError={clearError}
-          isConnected={isConnected()}
-        />
-      )}
-    </div>
+    <RealtimeKitProvider
+      value={meeting}
+      fallback={
+        <div className="size-full flex flex-col gap-3 place-items-center justify-center">
+          <RtkSpinner className="w-12 h-12 text-blue-600" />
+          <p className="text-lg">{isJoining ? 'Joining meeting...' : 'Loading...'}</p>
+        </div>
+      }
+    >
+      <Meeting />
+    </RealtimeKitProvider>
   );
-};
+}
 
 export default App;

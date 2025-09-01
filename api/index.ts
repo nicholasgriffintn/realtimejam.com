@@ -1,229 +1,227 @@
-import type {
-  ExportedHandler,
-  Request as CfRequest,
-  Response as CfResponse,
-} from '@cloudflare/workers-types';
+import {
+  DeepgramSTT,
+  TextComponent,
+  RealtimeKitTransport,
+  ElevenLabsTTS,
+  RealtimeAgent,
+} from "@cloudflare/realtime-agents";
 
-import { Room } from './room';
-import type { Env } from './types';
-import { createApiConfig } from './config';
+class ChatTextProcessor extends TextComponent {
+  env;
 
-async function handleRequest(
-  request: CfRequest,
-  env: Env
-): Promise<CfResponse> {
+  constructor(env) {
+    super();
+    this.env = env;
+  }
+
+  async onTranscript(text, reply) {
+    const prompt = `You are a helpful AI assistant in a video chat meeting. Respond naturally and helpfully to: ${text}`;
+    
+    try {
+      const { response } = await this.env.AI.run(
+        "@cf/meta/llama-3.1-8b-instruct",
+        { prompt }
+      );
+      reply(response);
+    } catch (error) {
+      console.error("AI processing error:", error);
+      reply("I'm having trouble processing that right now. Could you please repeat?");
+    }
+  }
+}
+
+export class RealtimeChatAgent extends RealtimeAgent {
+  constructor(ctx, env) {
+    super(ctx, env);
+  }
+
+  async init(agentId, meetingId, authToken, workerUrl, accountId, apiToken) {
+    const textProcessor = new ChatTextProcessor(this.env);
+    const rtkTransport = new RealtimeKitTransport(meetingId, authToken);
+
+    await this.initPipeline(
+      [
+        rtkTransport,
+        new DeepgramSTT(this.env.DEEPGRAM_API_KEY),
+        textProcessor,
+        new ElevenLabsTTS(this.env.ELEVENLABS_API_KEY),
+        rtkTransport,
+      ],
+      agentId,
+      workerUrl,
+      accountId,
+      apiToken,
+    );
+
+    const { meeting } = rtkTransport;
+
+    meeting.participants.joined.on("participantJoined", (participant) => {
+      console.log(`Participant joined: ${participant.name}`);
+      textProcessor.speak(`Welcome ${participant.name}! I'm your AI assistant. How can I help you today?`);
+    });
+
+    meeting.participants.joined.on("participantLeft", (participant) => {
+      console.log(`Participant left: ${participant.name}`);
+    });
+
+    await meeting.join();
+  }
+
+  async deinit() {
+    await this.deinitPipeline();
+  }
+}
+
+interface Env {
+  ASSETS: Fetcher;
+  REALTIME_CHAT_AGENT: DurableObjectNamespace;
+  DEEPGRAM_API_KEY: string;
+  ELEVENLABS_API_KEY: string;
+  ACCOUNT_ID: string;
+  API_TOKEN: string;
+  RTK_API_BASE_URL: string;
+  AI: any;
+}
+
+async function handleMeetingAPI(request: Request, env: Env) {
   const url = new URL(request.url);
+  const meetingId = url.searchParams.get("meetingId");
 
-  if (url.pathname.startsWith('/api/')) {
-    return handleApiRequest(url, request, env);
+  if (!meetingId) {
+    return new Response(JSON.stringify({ error: "meetingId is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
-  if (url.pathname === '/ws') {
-    if (request.headers.get('Upgrade') !== 'websocket') {
-      return new Response('Expected WebSocket', {
-        status: 400,
-      }) as unknown as CfResponse;
-    }
+  const agentId = `agent-${meetingId}`;
+  const agent = env.REALTIME_CHAT_AGENT.idFromName(meetingId);
+  const stub = env.REALTIME_CHAT_AGENT.get(agent);
 
-    if (!url.searchParams.has('room') || !url.searchParams.has('name')) {
-      return new Response('Missing room key or user name', {
-        status: 400,
-      }) as unknown as CfResponse;
-    }
-
-    const roomKey = url.searchParams.get('room');
-    const userName = url.searchParams.get('name');
-
-    if (!roomKey || !userName) {
-      return new Response('Missing room key or user name', {
-        status: 400,
-      }) as unknown as CfResponse;
-    }
-
-    const roomId = getRoomId(roomKey);
-
-    if (!env.ROOM) {
-      return new Response('Durable Object namespace not found', {
-        status: 500,
-      }) as unknown as CfResponse;
-    }
-
-    return env.ROOM.get(env.ROOM.idFromName(roomId)).fetch(request);
+  if (url.pathname.startsWith("/agentsInternal")) {
+    return stub.fetch(request);
   }
 
-  return env.ASSETS.fetch(request);
-}
-
-async function handleApiRequest(
-  url: URL,
-  request: CfRequest,
-  env: Env
-): Promise<CfResponse> {
-  const config = createApiConfig(env);
-  const path = url.pathname.substring(5); // Remove '/api/'
-
-  // Create a new room
-  if (path === 'rooms' && request.method === 'POST') {
-    const body = await request.json<{ name?: string }>();
-    const name = body?.name;
-
-    if (!name) {
-      return new Response(JSON.stringify({ error: 'Name is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      }) as unknown as CfResponse;
-    }
-
-    const roomKey = generateRoomKey(config.room.keyLength);
-    const roomId = getRoomId(roomKey);
-
-    if (!env.ROOM) {
-      return new Response('Durable Object namespace not found', {
-        status: 500,
-      }) as unknown as CfResponse;
-    }
-
-    const roomObject = env.ROOM.get(env.ROOM.idFromName(roomId));
-
-    const response = await roomObject.fetch(
-      new Request(`${config.api.dummyBaseUrl}/initialize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomKey, moderator: name }),
-      }) as unknown as CfRequest
-    );
-
-    return response;
-  }
-
-  if (path === 'rooms/join' && request.method === 'POST') {
-    const body = await request.json<{ name?: string; roomKey?: string }>();
-    const name = body?.name;
-    const roomKey = body?.roomKey;
-
-    if (!name || !roomKey) {
-      return new Response(
-        JSON.stringify({ error: 'Name and room key are required' }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
+  switch (url.pathname) {
+    case "/api/meeting/join":
+      try {
+        const authHeader = request.headers.get("Authorization");
+        if (!authHeader) {
+          return new Response(JSON.stringify({ error: "Authorization header required" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" }
+          });
         }
-      ) as unknown as CfResponse;
-    }
 
-    const roomId = getRoomId(roomKey);
+        const authToken = authHeader.split(" ")[1];
+        
+        // Check if agent is already in meeting
+        const participantsResponse = await fetch(`${env.RTK_API_BASE_URL}/meetings/${meetingId}/participants`, {
+          headers: {
+            "Authorization": `Bearer ${env.API_TOKEN}`,
+            "Content-Type": "application/json"
+          }
+        });
 
-    if (!env.ROOM) {
-      return new Response('Durable Object namespace not found', {
-        status: 500,
-      }) as unknown as CfResponse;
-    }
-
-    const roomObject = env.ROOM.get(env.ROOM.idFromName(roomId));
-
-    const response = await roomObject.fetch(
-      new Request(`${config.api.dummyBaseUrl}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      }) as unknown as CfRequest
-    );
-
-    return response;
-  }
-
-  if (path === 'rooms/settings' && request.method === 'GET') {
-    if (!url.searchParams.has('roomKey')) {
-      return new Response(JSON.stringify({ error: 'Room key is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      }) as unknown as CfResponse;
-    }
-
-    const roomKey = url.searchParams.get('roomKey');
-
-    if (!roomKey) {
-      return new Response(JSON.stringify({ error: 'Room key is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      }) as unknown as CfResponse;
-    }
-
-    const roomId = getRoomId(roomKey);
-
-    if (!env.ROOM) {
-      return new Response('Durable Object namespace not found', {
-        status: 500,
-      }) as unknown as CfResponse;
-    }
-
-    const roomObject = env.ROOM.get(env.ROOM.idFromName(roomId));
-
-    return roomObject.fetch(
-      new Request(`${config.api.dummyBaseUrl}/settings`, {
-        method: 'GET',
-      }) as unknown as CfRequest
-    );
-  }
-
-  if (path === 'rooms/settings' && request.method === 'PUT') {
-    const body = await request.json<{
-      name?: string;
-      roomKey?: string;
-      settings?: Record<string, unknown>;
-    }>();
-
-    const name = body?.name;
-    const roomKey = body?.roomKey;
-    const settings = body?.settings;
-
-    if (!name || !roomKey || !settings) {
-      return new Response(
-        JSON.stringify({ error: 'Name, room key, and settings are required' }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
+        if (participantsResponse.ok) {
+          const participants = await participantsResponse.json();
+          const hasAgent = participants.data?.some((p: any) => p.name?.includes('agent') || p.role === 'agent');
+          
+          if (!hasAgent) {
+            // Initialize agent to join the meeting
+            await stub.init(
+              agentId,
+              meetingId,
+              authToken,
+              url.host,
+              env.ACCOUNT_ID,
+              env.API_TOKEN
+            );
+          }
         }
-      ) as unknown as CfResponse;
-    }
 
-    const roomId = getRoomId(roomKey);
+        return new Response(JSON.stringify({ 
+          success: true, 
+          meetingId,
+          message: "Ready to join meeting"
+        }), {
+          headers: { "Content-Type": "application/json" }
+        });
 
-    if (!env.ROOM) {
-      return new Response('Durable Object namespace not found', {
-        status: 500,
-      }) as unknown as CfResponse;
-    }
+      } catch (error) {
+        console.error("Meeting join error:", error);
+        return new Response(JSON.stringify({ error: "Failed to join meeting" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
 
-    const roomObject = env.ROOM.get(env.ROOM.idFromName(roomId));
+    case "/api/meeting/leave":
+      try {
+        await stub.deinit();
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { "Content-Type": "application/json" }
+        });
+      } catch (error) {
+        console.error("Meeting leave error:", error);
+        return new Response(JSON.stringify({ error: "Failed to leave meeting" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
 
-    return roomObject.fetch(
-      new Request(`${config.api.dummyBaseUrl}/settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, settings }),
-      }) as unknown as CfRequest
-    );
+    case "/api/webhook":
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", { status: 405 });
+      }
+
+      try {
+        const event = await request.json();
+        console.log("Webhook event received:", event);
+
+        // Handle different webhook events
+        switch (event.type) {
+          case "meeting.participant_joined":
+            // Agent logic can be added here if needed
+            break;
+          case "meeting.participant_left":
+            // Check if we need to keep agent in meeting
+            break;
+        }
+
+        return new Response("OK", { status: 200 });
+      } catch (error) {
+        console.error("Webhook error:", error);
+        return new Response("Internal Server Error", { status: 500 });
+      }
+
+    default:
+      return new Response(JSON.stringify({ error: "Not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" }
+      });
   }
-
-  return new Response(JSON.stringify({ error: 'Not found' }), {
-    status: 404,
-    headers: { 'Content-Type': 'application/json' },
-  }) as unknown as CfResponse;
-}
-
-function generateRoomKey(keyLength: number = 6) {
-  return Math.random().toString(36).substring(2, 2 + keyLength).toUpperCase();
-}
-
-function getRoomId(roomKey: string) {
-  return `room-${roomKey.toLowerCase()}`;
 }
 
 export default {
-  async fetch(request: CfRequest, env: Env): Promise<CfResponse> {
-    return handleRequest(request, env);
-  },
-} satisfies ExportedHandler<Env>;
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
 
-export { Room };
+    // Handle API requests
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/agentsInternal")) {
+      return handleMeetingAPI(request, env);
+    }
+
+    // Serve static assets for everything else
+    try {
+      return await env.ASSETS.fetch(request);
+    } catch (error) {
+      // Fallback for SPA routing - serve index.html for non-API routes
+      if (url.pathname !== "/" && !url.pathname.includes(".")) {
+        const indexRequest = new Request(new URL("/", request.url), request);
+        return await env.ASSETS.fetch(indexRequest);
+      }
+      throw error;
+    }
+  },
+};
